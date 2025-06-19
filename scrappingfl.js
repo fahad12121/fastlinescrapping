@@ -7,6 +7,7 @@ let activeMatches = new Map();
 let currentOver = 0;
 let matchData = [];
 let intervalId = null;
+let browser = null;
 
 const getScoreSource = async () => {
     return await redisClient3.get("score_source_fl")
@@ -21,28 +22,6 @@ const setActiveScoreEventNatureIds = async (event) => {
             match_type: event.commentary_match_type,
         })
     );
-}
-
-const cleanPuppeteer = () => {
-    exec('pkill -f puppeteer', (err, stdout, stderr) => {
-        if (err) {
-            console.error(`Puppeteer kill error: ${err.message}`);
-        } else if (stderr) {
-            console.error(`Puppeteer kill stderr: ${stderr}`);
-        } else {
-            console.log(`Puppeteer processes killed successfully:\n${stdout || 'No output'}`);
-        }
-    });
-
-    exec('pkill -f chrome', (err, stdout, stderr) => {
-        if (err) {
-            console.error(`Chrome kill error: ${err.message}`);
-        } else if (stderr) {
-            console.error(`Chrome kill stderr: ${stderr}`);
-        } else {
-            console.log(`Chrome processes killed successfully:\n${stdout || 'No output'}`);
-        }
-    });
 }
 
 const closeBlankPage = async (browser) => {
@@ -60,14 +39,14 @@ const stopScrapping = async (browser, page, data) => {
     events = events.filter(event => event.event_id !== data.event_id);
     await redisClient3.set("score_source_fl", JSON.stringify(events));
     if (activeMatches.size == 0) {
-        if (intervalId) {
-            clearInterval(intervalId);
-            intervalId = null;
-        }
+        // if (intervalId) {
+        //     clearInterval(intervalId);
+        //     intervalId = null;
+        // }
 
         await browser.close();
-        // cleanPuppeteer();
-        process.exit(1);
+        browser = null;
+        // process.exit(1);
     }
 }
 
@@ -507,102 +486,113 @@ const scrapeAndExtractTextWithSVG = async (page, index, EventData, browser) => {
 };
 
 (async () => {
-    var proxyUrl = null;
+    try {
 
-    if (process.env.ROTATING_PROXY_ENABLE == "true") {
-        proxyUrl = "http://" + process.env.ROTATING_PROXY_HOST + ":" + process.env.ROTATING_PROXY_PORT;
-    }
-    // const browser = await puppeteer.launch({ headless: false });
-    const devtools = process.env.BROWSER_DEV_TOOLS === "true";
-    const browser = await puppeteer.launch({
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            `--proxy-server=${proxyUrl}`, // Use provided proxy
+        var proxyUrl = null;
 
-            // Network and TLS options
-            '--ignore-certificate-errors',
-            '--ssl-version-max=tls1.3',
-            '--ssl-version-min=tls1.2',
-
-            // Reduce memory/cpu usage
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--disable-background-networking',
-            '--disable-default-apps',
-            '--disable-sync',
-            '--metrics-recording-only',
-            '--mute-audio',
-            '--no-pings',
-            '--disable-background-timer-throttling',
-            '--disable-renderer-backgrounding'
-        ],
-        headless: "new", // Use new headless mode
-        devtools: devtools, // Opens DevTools when headless is false
-        ignoreHTTPSErrors: true, // Ignores HTTPS errors, useful for self-signed certificates
-    });
-
-    const startScrappingData = async (eventData) => {
-        if (!eventData.length) {
-            console.error("No event data to process.");
-            process.exit(1);
+        if (process.env.ROTATING_PROXY_ENABLE == "true") {
+            proxyUrl = "http://" + process.env.ROTATING_PROXY_HOST + ":" + process.env.ROTATING_PROXY_PORT;
         }
+        // const browser = await puppeteer.launch({ headless: false });
+        const devtools = process.env.BROWSER_DEV_TOOLS === "true";
+        let browserParams = {
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                `--proxy-server=${proxyUrl}`, // Use provided proxy
 
-        for (const [index, event] of eventData.entries()) {
-            const { event_id, commentary_url } = event;
-            if (!activeMatches.has(event_id)) {
-                (async () => {
-                    activeMatches.set(event_id);
+                // Network and TLS options
+                '--ignore-certificate-errors',
+                '--ssl-version-max=tls1.3',
+                '--ssl-version-min=tls1.2',
 
-                    let page = await browser.newPage();
-                    page.setCacheEnabled(false)
-                    await page.setDefaultNavigationTimeout(0);
+                // Reduce memory/cpu usage
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--metrics-recording-only',
+                '--mute-audio',
+                '--no-pings',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding'
+            ],
+            headless: "new", // Use new headless mode
+            devtools: devtools, // Opens DevTools when headless is false
+            ignoreHTTPSErrors: true, // Ignores HTTPS errors, useful for self-signed certificates
+        }
+        browser = await puppeteer.launch(browserParams);
 
-                    console.log(`Opening page ${index + 1}: ${commentary_url}`);
+        const startScrappingData = async (eventData) => {
+            for (const [index, event] of eventData.entries()) {
+                const { event_id, commentary_url } = event;
+                if (!activeMatches.has(event_id)) {
+                    (async () => {
+                        activeMatches.set(event_id);
 
-                    if (process.env.ROTATING_PROXY_USER) {
-                        await page.authenticate({
-                            username: process.env.ROTATING_PROXY_USER,
-                            password: process.env.ROTATING_PROXY_PASSWORD,
-                        });
-                    }
-                    try {
-                        await page.goto(commentary_url, { waitUntil: 'networkidle2', timeout: 60000 });
-                        const response = await page.reload({ waitUntil: 'networkidle2' });
+                        let page = await browser.newPage();
+                        page.setCacheEnabled(false)
+                        await page.setDefaultNavigationTimeout(0);
 
-                        if (!response || !response.ok()) {
-                            console.error(`Failed to load ${commentary_url}: Status ${response?.status()}`);
+                        console.log(`Opening page ${index + 1}: ${commentary_url}`);
+
+                        if (process.env.ROTATING_PROXY_USER) {
+                            await page.authenticate({
+                                username: process.env.ROTATING_PROXY_USER,
+                                password: process.env.ROTATING_PROXY_PASSWORD,
+                            });
+                        }
+                        try {
+                            await page.goto(commentary_url, { waitUntil: 'networkidle2', timeout: 60000 });
+                            const response = await page.reload({ waitUntil: 'networkidle2' });
+
+                            if (!response || !response.ok()) {
+                                console.error(`Failed to load ${commentary_url}: Status ${response?.status()}`);
+                                activeMatches.delete(event_id);
+                                await page.close();
+                            } else {
+                                await closeBlankPage(browser)
+                                let newEvent = {
+                                    event_id: event.event_id,
+                                    event_type_id: event.event_type_id,
+                                    event_nature_id: event.event_nature_id,
+                                }
+                                setActiveScoreEventNatureIds(event)
+                                console.log(`Scraping data for page ${index + 1}...`);
+                                await scrapeAndExtractTextWithSVG(page, index, newEvent, browser);
+                                console.log(`Finished scraping page ${index + 1}`);
+                            }
+                        } catch (error) {
+                            console.log(error)
                             activeMatches.delete(event_id);
                             await page.close();
-                        } else {
-                            await closeBlankPage(browser)
-                            let newEvent = {
-                                event_id: event.event_id,
-                                event_type_id: event.event_type_id,
-                                event_nature_id: event.event_nature_id,
-                            }
-                            setActiveScoreEventNatureIds(event)
-                            console.log(`Scraping data for page ${index + 1}...`);
-                            await scrapeAndExtractTextWithSVG(page, index, newEvent, browser);
-                            console.log(`Finished scraping page ${index + 1}`);
                         }
-                    } catch (error) {
-                        console.log(error)
-                        activeMatches.delete(event_id);
-                        await page.close();
-                    }
-                })();
+                    })();
+                }
             }
         }
+
+        const fetchAndProcessEvents = async () => {
+            const eventData = await getEventData();
+            if (!eventData.length) {
+                console.error("No event data to process.");
+                if (browser) await browser.close();
+                return browser = null;
+            }
+
+            if (!browser) {
+                browser = await puppeteer.launch(browserParams);
+            }
+
+            startScrappingData(eventData);
+        }
+
+        fetchAndProcessEvents();
+
+        intervalId = setInterval(fetchAndProcessEvents, 15000);
+    } catch (error) {
+        console.log('Something went wrong, browser restarted');
     }
-
-    const fetchAndProcessEvents = async () => {
-        const eventData = await getEventData();
-        startScrappingData(eventData);
-    }
-
-    fetchAndProcessEvents();
-
-    intervalId = setInterval(fetchAndProcessEvents, 15000);
 
 })();
